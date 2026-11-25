@@ -84,7 +84,7 @@
             },
             "decision_seconds": {
               "default": 75.0,
-              "description": "Whole decision incl. thinking turns and retries; past it the seat plays the fallback.",
+              "description": "Whole decision incl. thinking turns and retries; past it the episode fails for that seat.",
               "exclusiveMinimum": 0,
               "title": "Decision Seconds",
               "type": "number"
@@ -319,7 +319,7 @@
         },
         "episode_wall_seconds": {
           "default": 1800.0,
-          "description": "LLM wall budget; past it seats go scripted.",
+          "description": "LLM wall budget; past it any model seat fails the episode.",
           "exclusiveMinimum": 0,
           "title": "Episode Wall Seconds",
           "type": "number"
@@ -460,7 +460,9 @@
           "memory": "2Gi"
         }
       },
-      "env": {}
+      "env": {
+        "COWORLD_LLM_ENABLED": "true"
+      }
     },
     "memory": {
       "protocol": "append-v1"
@@ -468,10 +470,18 @@
   },
   "player": [
     {
+      "id": "model",
+      "name": "Model Fisher",
+      "type": "player",
+      "description": "Model-backed fisher using google/gemini-3.8-flash through the native Coworld LLM sidecar.",
+      "file": "souls/model.md",
+      "source_url": "https://github.com/Metta-AI/coworld-overfished/tree/main/souls"
+    },
+    {
       "id": "steady",
       "name": "Steady",
       "type": "player",
-      "description": "Scripted: 40% effort every turn, never punishes. The certification baseline and the fallback.",
+      "description": "Scripted: 40% effort every turn, never punishes.",
       "file": "souls/steady.md",
       "source_url": "https://github.com/Metta-AI/coworld-overfished/tree/main/souls"
     },
@@ -590,7 +600,7 @@
     {
       "id": "long-season",
       "name": "Long season (8 seats, 80 to 120 turns)",
-      "description": "80 to 120 turns for local experiments. The manifest asks for a 45 minute hosted deadline; the wall budget cuts thinking, then goes scripted, if models are slow.",
+      "description": "80 to 120 turns for local experiments. The manifest asks for a 45 minute hosted deadline; the wall budget cuts thinking turns in the last quarter and terminates if exhausted.",
       "game_config": {
         "players": [
           {
@@ -630,7 +640,7 @@
   "certification": {
     "players": [
       {
-        "player_id": "steady"
+        "player_id": "model"
       },
       {
         "player_id": "greedy"

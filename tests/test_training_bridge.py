@@ -61,10 +61,10 @@ def test_language_thinking_and_retry_preserve_hosted_conversation():
         second["observation"]["messages"][-1]["content"]
         == "That was not a JSON object. Reply with exactly one JSON object."
     )
-    consumed = session.step({"decision_id": 0, "response": "invalid again"})
-    assert consumed["kind"] == "consumed_rejection"
-    assert consumed["action"] == {"effort": 0.4, "punish": [], "gift": [], "auto": True}
-    assert consumed["observation"]["decision_id"] == 1
+    failed = session.step({"decision_id": 0, "response": "invalid again"})
+    assert failed["kind"] == "terminal_failure"
+    assert failed["seat"] == 0
+    assert "action" not in failed
     assert initial["messages"][0]["content"].startswith(soul.read_text().partition("\n")[2].strip())
 
 

@@ -115,6 +115,8 @@ async def test_cli_memory_survives_process_restart(tmp_path, unused_tcp_port, mo
             reply = {"notebook": "private carried note" if "private durable note" in observation else ""}
         elif observation.startswith("SCRATCHPAD WRITE"):
             reply = {"scratchpad_append": "private durable note\n"}
+        elif observation.startswith("COUNCIL BALLOT"):
+            reply = {"vote": None}
         elif observation.startswith("COUNCIL"):
             reply = {"say": "hello"}
         else:

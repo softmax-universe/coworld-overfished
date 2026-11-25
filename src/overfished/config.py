@@ -93,7 +93,7 @@ class LlmConfig(BaseModel):
     decision_seconds: float = Field(
         default=75.0,
         gt=0,
-        description="Whole decision incl. thinking turns and retries; past it the seat plays the fallback.",
+        description="Whole decision incl. thinking turns and retries; past it the episode fails for that seat.",
     )
     max_output_tokens: int = Field(
         default=4000,
@@ -174,7 +174,7 @@ class GameConfig(BaseModel):
     punishments_public: bool = Field(default=True, description="Whether the ledger names who punished whom.")
     reveal_models: bool = Field(default=True, description="Put each seat's model in results and replay.")
     episode_wall_seconds: float = Field(
-        default=1800.0, gt=0, description="LLM wall budget; past it seats go scripted."
+        default=1800.0, gt=0, description="LLM wall budget; past it any model seat fails the episode."
     )
     lake: LakeConfig = Field(default_factory=LakeConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)

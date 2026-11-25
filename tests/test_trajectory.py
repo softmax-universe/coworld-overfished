@@ -11,7 +11,7 @@ from overfished.__main__ import stage_local_episode
 from overfished.config import GameConfig
 from overfished.llm import Transport
 from overfished.prompts import TRAIN, PromptConfig
-from overfished.server import Episode, load_seats
+from overfished.server import Episode, SeatPolicyFailure, load_seats
 from overfished.trajectory import Attempt, Trajectory
 from tools.gen_manifest import manifest
 
@@ -223,7 +223,7 @@ async def test_native_attempts_join_private_memory_speech_and_actions(
 
 
 @pytest.mark.parametrize("mode", ["http429", "invalid-json", "invalid-schema"])
-async def test_failed_native_responses_survive_complete_fallback_episode(
+async def test_failed_native_responses_fail_episode_without_scores_and_retain_evidence(
     tmp_path, monkeypatch, unused_tcp_port, mode
 ):
     archives = {}
@@ -248,32 +248,37 @@ async def test_failed_native_responses_survive_complete_fallback_episode(
     monkeypatch.setenv("COWORLD_SOURCE_REVISION", SOURCE_REVISION)
     try:
         transport = Transport(f"http://127.0.0.1:{unused_tcp_port}", 2)
-        _, replay, _ = await run_episode(
-            tmp_path,
-            [VILLAGER, SOULS / "steady.md"],
-            transport,
-            turns=2,
-            commune_rounds=0,
-            commune_at_start=False,
-        )
+        with pytest.raises(SeatPolicyFailure) as exc_info:
+            await run_episode(
+                tmp_path,
+                [VILLAGER, SOULS / "steady.md"],
+                transport,
+                turns=2,
+                commune_rounds=0,
+                commune_at_start=False,
+            )
+        assert exc_info.value.slot == 0
     finally:
         await runner.cleanup()
+    assert not (tmp_path / "results.json").exists()
+    assert not (tmp_path / "replay").exists()
+    failure = json.loads((tmp_path / "player_failure.json").read_text())
+    assert failure["failed_policy_index"] == 0
     complete = json.loads(trajectory.read_text())
-    records = complete["decisions"] + [complete["episode"]]
-    assert records[-1]["status"] == "completed"
-    model_rows = [row for row in records[:-1] if row["seat"] == "0"]
-    assert model_rows and all(row["action_status"] == "fallback" for row in model_rows)
-    attempts = [attempt for row in model_rows for attempt in row["attempts"]]
-    archive_path = tmp_path / "native-call-archives.json"
-    archive_path.write_text(json.dumps(archives) + "\n")
-    archive_path.chmod(0o600)
+    episode_row = complete["episode"]
+    assert episode_row["status"] == "truncated"
+    assert episode_row["participant_outcomes"] == {}
+    assert episode_row["outcome"]["policy_failure"]["slot"] == 0
+    unapplied = [item["attempt"] for item in episode_row["outcome"]["unapplied_attempts"]]
+    recorded = [attempt for row in complete["decisions"] for attempt in row["attempts"]]
+    attempts = recorded + unapplied
+    assert len(unapplied) == 1
     assert len(attempts) == len(archives)
     for attempt in attempts:
         request, raw = archives[attempt["platform_call_id"]]
         assert attempt["request"] == request
         assert attempt["raw_response"] == raw
         assert not attempt["accepted"] and attempt["rejection_reason"]
-    assert "PRIVATE" not in json.dumps(replay)
 
 
 def test_failed_latest_snapshot_preserves_previous_received_facts_and_new_private_partial(

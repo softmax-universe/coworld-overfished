@@ -1,4 +1,4 @@
-"""Scripted baselines. No model, legal on every observation, used for certification and as the fallback.
+"""Scripted baselines. No model, legal on every observation, used as explicit scripted opponents.
 
 A soul file seats one with `#!scripted/<name>`. The body may set `effort: <0..1>`; anything else is ignored.
 """
@@ -87,9 +87,3 @@ def scripted_policy(name: str, soul_text: str) -> ScriptedPolicy:
     if name == "greedy":
         return ScriptedPolicy(name=name, effort=1.0)
     return ScriptedPolicy(name=name, effort=soul_effort(soul_text))
-
-
-def fallback_action(engine: Engine, slot: int) -> Action:
-    """What a seat does when its model fails: repeat its last effort, no punishment."""
-    effort = engine.last_effort[slot] if engine.turns else DEFAULT_EFFORT
-    return Action(effort=effort, auto=True)

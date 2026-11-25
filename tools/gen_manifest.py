@@ -117,12 +117,13 @@ def manifest() -> dict:
                 "run": ["overfished"],
                 "source_url": f"{GITHUB}/tree/main",
                 "resources": {"requests": {"cpu": "1", "memory": "1Gi"}, "limits": {"cpu": "2", "memory": "2Gi"}},
-                "env": {},
+                "env": {"COWORLD_LLM_ENABLED": "true"},
             },
             "memory": {"protocol": "append-v1"},
         },
         "player": [
-            player("steady", "Steady", "Scripted: 40% effort every turn, never punishes. The certification baseline and the fallback."),
+            player("model", "Model Fisher", "Model-backed fisher using google/gemini-3.8-flash through the native Coworld LLM sidecar."),
+            player("steady", "Steady", "Scripted: 40% effort every turn, never punishes."),
             player("greedy", "Greedy", "Scripted: 100% effort every turn, announces it at council, undeterred by punishment, never punishes."),
             player("enforcer", "Enforcer", "Scripted: 40% effort; burns one fish of up to two fishers whose last catch was 1.5x the median."),
         ],
@@ -133,14 +134,14 @@ def manifest() -> dict:
             variant(
                 "long-season",
                 "Long season (8 seats, 80 to 120 turns)",
-                "80 to 120 turns for local experiments. The manifest asks for a 45 minute hosted deadline; the wall budget cuts thinking, then goes scripted, if models are slow.",
+                "80 to 120 turns for local experiments. The manifest asks for a 45 minute hosted deadline; the wall budget cuts thinking turns in the last quarter and terminates if exhausted.",
                 turns={"lo": 80, "hi": 120},
                 identity="persistent",
                 episode_wall_seconds=2400.0,
             ),
         ],
         "certification": {
-            "players": [{"player_id": p} for p in ["steady", "greedy", "enforcer", "steady", "steady", "greedy", "enforcer", "steady"]],
+            "players": [{"player_id": p} for p in ["model", "greedy", "enforcer", "steady", "steady", "greedy", "enforcer", "steady"]],
             "game_config": {"players": seats(8), "seed": 7, "turns": {"lo": 12, "hi": 12}, "commune_every": 4},
         },
     }

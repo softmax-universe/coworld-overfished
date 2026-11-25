@@ -40,7 +40,7 @@ from overfished.soul import Soul
 from overfished.trajectory import Attempt
 
 PLAYER_SLOT_HEADER = "X-Coworld-Player-Slot"
-_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+_FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
 class LlmError(RuntimeError):
@@ -152,8 +152,12 @@ class Transport:
     calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    observe: Callable[[int, Attempt], None] = lambda slot, attempt: None
+    observe: Callable[[int, Attempt], None] | None = None
     received_header_pairs: dict[str, list[tuple[bytes, bytes]]] = field(default_factory=dict)
+
+    def _notify(self, slot: int, attempt: Attempt) -> None:
+        if self.observe is not None:
+            self.observe(slot, attempt)
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
@@ -206,7 +210,7 @@ class Transport:
             timeout_ms=self.timeout_seconds * 1000,
         ).model_dump(mode="json")
         self.received_header_pairs[evidence.attempt_id] = []
-        self.observe(slot, evidence)
+        self._notify(slot, evidence)
         started = time.monotonic()
         request_deadline = asyncio.get_running_loop().time() + self.timeout_seconds
         response = None
@@ -267,7 +271,7 @@ class Transport:
                 if header in headers:
                     setattr(evidence, attribute, headers[header])
             evidence.provider_request_id = headers.get("x-request-id", headers.get("request-id"))
-            self.observe(slot, evidence)
+            self._notify(slot, evidence)
             if headers.get("content-encoding", "identity").lower() != "identity":
                 raise ValueError("native response must use identity encoding")
             async for chunk in response.aiter_raw():
@@ -278,7 +282,7 @@ class Transport:
                 evidence.response_body_b64 = base64.b64encode(raw).decode("ascii")
                 text_parts.append(utf8.decode(chunk, final=False))
                 evidence.raw_response = None if utf8.getstate()[0] else "".join(text_parts)
-                self.observe(slot, evidence)
+                self._notify(slot, evidence)
             evidence.response_complete = True
             text_parts.append(utf8.decode(b"", final=True))
             evidence.raw_response = "".join(text_parts)
@@ -303,7 +307,7 @@ class Transport:
                 if response is not None:
                     evidence.response_reader_joined = joined and closer.exception() is None
                 evidence.latency_ms = (time.monotonic() - started) * 1000
-                self.observe(slot, evidence)
+                self._notify(slot, evidence)
                 if not joined:
                     raise OwnershipUnsettled("native reader release did not join")
                 closer.result()
@@ -342,7 +346,7 @@ class Transport:
             if not isinstance(content, str):
                 raise LlmError("provider returned no action text")
             evidence.response = content
-            self.observe(slot, evidence)
+            self._notify(slot, evidence)
             if not content.strip():
                 raise LlmError("provider returned no action text")
             return content
@@ -424,8 +428,7 @@ Council `say` and `vote` are public. Your notebook is handed back to you every t
 {llm.notebook_max_chars} characters.
 
 REPLY FORMAT. Reply with exactly one JSON object and nothing else. Keep `thinking` under 150 words: a decision
-that takes too long to write is replaced by your default action (repeat your last effort, punish nobody, say
-nothing). On a fishing turn:
+that fails to produce a valid reply in time ends the episode as a policy failure. On a fishing turn:
   {{"thinking": "<private>", "notebook": "<private, replaces the old notebook>",
    "effort": <number 0 to 1>, "punish": [{{"target": "<fisher name>", "fish": <whole number>}}],
    "gift": [{{"target": "<fisher name>", "fish": <whole number>}}]}}
@@ -651,28 +654,16 @@ def council_observation(
 
 
 def extract_json(text: str) -> dict | None:
-    """Pull the first JSON object out of a reply, tolerating fences and surrounding prose."""
-    match = _JSON_OBJECT.search(text)
-    if match is None:
+    """Parse a single JSON object, optionally wrapped in one outer Markdown fence."""
+    candidate = text.strip()
+    match = _FENCE.fullmatch(candidate)
+    if match is not None:
+        candidate = match.group(1).strip()
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
         return None
-    candidate = match.group(0)
-    for attempt in (candidate, candidate.strip("`")):
-        try:
-            value = json.loads(attempt)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            return value
-    # Trim trailing junk after the last closing brace progressively.
-    end = candidate.rfind("}")
-    while end > 0:
-        try:
-            value = json.loads(candidate[: end + 1])
-        except json.JSONDecodeError:
-            end = candidate.rfind("}", 0, end)
-            continue
-        return value if isinstance(value, dict) else None
-    return None
+    return value if isinstance(value, dict) else None
 
 
 def parse_vote(reply: dict, engine: Engine, slot: int) -> CouncilVote | str:
@@ -696,21 +687,15 @@ def parse_vote(reply: dict, engine: Engine, slot: int) -> CouncilVote | str:
 def parse_action(reply: dict, engine: Engine, slot: int) -> Action | str:
     """An Action, or a string explaining why the reply is not one."""
     effort = reply.get("effort")
-    if isinstance(effort, str):
-        stripped = effort.strip().rstrip("%")
-        try:
-            effort = float(stripped) / (100.0 if effort.strip().endswith("%") else 1.0)
-        except ValueError:
-            return "`effort` must be a number between 0 and 1"
     if not isinstance(effort, (int, float)) or isinstance(effort, bool):
         return "`effort` must be a number between 0 and 1"
     effort = float(effort)
-    if 5.0 <= effort <= 100.0:
-        effort = effort / 100.0
-    if not 0.0 <= effort <= 1.0:
+    if not math.isfinite(effort) or not 0.0 <= effort <= 1.0:
         return "`effort` must be between 0 and 1 (a fraction of capacity)"
     punish: list[Punishment] = []
-    raw_punish = reply.get("punish") or []
+    raw_punish = reply.get("punish")
+    if raw_punish is None:
+        raw_punish = []
     if not isinstance(raw_punish, list):
         return "`punish` must be a list"
     for entry in raw_punish:
@@ -720,16 +705,16 @@ def parse_action(reply: dict, engine: Engine, slot: int) -> Action | str:
         target_slot = engine.slot_of(target) if isinstance(target, str) else None
         if target_slot is None or target_slot == slot:
             return f"`punish.target` must name another fisher; got {target!r}"
-        fish = entry.get("fish", 1)
-        if isinstance(fish, float) and fish.is_integer():
-            fish = int(fish)
+        fish = entry.get("fish")
         if not isinstance(fish, int) or isinstance(fish, bool) or fish < 0:
             return "`punish.fish` must be a whole number"
         if fish == 0:
             continue
         punish.append(Punishment(target=target_slot, fish=fish))
     gifts: list[Gift] = []
-    raw_gift = reply.get("gift") or []
+    raw_gift = reply.get("gift")
+    if raw_gift is None:
+        raw_gift = []
     if not isinstance(raw_gift, list):
         return "`gift` must be a list"
     for entry in raw_gift:
@@ -739,9 +724,7 @@ def parse_action(reply: dict, engine: Engine, slot: int) -> Action | str:
         target_slot = engine.slot_of(target) if isinstance(target, str) else None
         if target_slot is None or target_slot == slot:
             return f"`gift.target` must name another fisher; got {target!r}"
-        fish = entry.get("fish", 1)
-        if isinstance(fish, float) and fish.is_integer():
-            fish = int(fish)
+        fish = entry.get("fish")
         if not isinstance(fish, int) or isinstance(fish, bool) or fish < 0:
             return "`gift.fish` must be a whole number"
         if fish == 0:
@@ -769,7 +752,6 @@ class SeatBrain:
     notebook: str = ""
     calls: int = 0
     failures: int = 0
-    fallbacks: int = 0
     last_thinking: list[str] = field(default_factory=list)
     memory_attempts: list[Attempt] = field(default_factory=list)
 
@@ -779,7 +761,7 @@ class Decision:
     action: Action | None = None
     say: str | None = None
     vote: CouncilVote | None = None
-    auto: bool = False
+    failure_reason: str | None = None
     transcript: list[str] = field(default_factory=list)
     attempts: list[Attempt] = field(default_factory=list)
 
@@ -843,7 +825,13 @@ def parse_decision_reply(
             reason=parsed_vote, retry_message=f"Invalid: {parsed_vote}. Reply with one corrected JSON object."
         )
     if council:
-        return SpeechReply(text=clip(reply.get("say"), engine.config.llm.say_max_chars))
+        say = reply.get("say")
+        if not isinstance(say, str):
+            return InvalidReply(
+                reason="`say` must be a string",
+                retry_message='Invalid: `say` must be a string (use "" to say nothing). Reply with one corrected JSON object.',
+            )
+        return SpeechReply(text=clip(say, engine.config.llm.say_max_chars))
     parsed = parse_action(reply, engine, brain.slot)
     if isinstance(parsed, Action):
         return ActionReply(action=parsed)
@@ -914,15 +902,18 @@ async def decide(
                 brain, transport, engine, observation, council, think_turns, log, decision, voting
             )
     except TimeoutError:
-        log(f"decision exceeded {config.decision_seconds:.0f}s in total; falling back")
+        log(f"decision exceeded {config.decision_seconds:.0f}s in total; failing episode")
         decision.action = None
         decision.say = None
         decision.vote = None
+        decision.failure_reason = f"whole decision deadline exceeded ({config.decision_seconds:.0f}s)"
         if decision.attempts:
             decision.attempts[-1].rejection_reason = "whole decision deadline exceeded"
+            transport._notify(brain.slot, decision.attempts[-1])
     if decision.action is None and decision.say is None and decision.vote is None:
-        decision.auto = True
-        brain.fallbacks += 1
+        decision.failure_reason = decision.failure_reason or (
+            decision.attempts[-1].rejection_reason if decision.attempts else "no valid decision produced"
+        )
     return decision
 
 
@@ -952,6 +943,7 @@ async def _decide_calls(
             )
         except LlmError as error:
             evidence.rejection_reason = str(error)
+            transport._notify(brain.slot, evidence)
             brain.failures += 1
             log(f"model call failed: {error}")
             break
@@ -963,6 +955,7 @@ async def _decide_calls(
             log(f"thinking: {brain.last_thinking[-1]}")
         if isinstance(parsed, ThinkingReply):
             evidence.rejection_reason = "private thinking continuation; no game action"
+            transport._notify(brain.slot, evidence)
             if thinks_left <= 0:
                 log("asked to continue thinking with no thinking turns left; demanding a decision")
                 messages.append({"role": "assistant", "content": reply_text})
@@ -1003,6 +996,7 @@ async def _decide_calls(
             evidence.rejection_reason = None
             return
         evidence.rejection_reason = parsed.reason
+        transport._notify(brain.slot, evidence)
         log(f"invalid action: {parsed.reason}; " + ("asking once more" if retries_left else "giving up"))
         if retries_left == 0:
             break
