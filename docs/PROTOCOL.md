@@ -118,8 +118,7 @@ allows `llm.think_turns` such replies (default 1), after which the game demands 
 Parsing accepts a single JSON object (optionally wrapped in one outer Markdown code fence), case-insensitive
 target names, omitted or null `punish`/`gift` lists, and drops `fish: 0` entries. `effort` must be a numeric
 fraction in `[0, 1]`, `say` must be a string (`""` to stay silent), and `vote` must be `null` or an eligible
-other fisher's name. An invalid reply gets one correction prompt with the reason. If the seat still has not
-produced a valid decision after `llm.max_calls_per_decision` calls, or a call fails or times out
+other fisher's name. An invalid decision ends the episode immediately. If the seat exhausts `llm.max_calls_per_decision` calls, or a call fails or times out
 (`llm.timeout_seconds` / `llm.decision_seconds`), the episode ends as a terminal policy failure for that seat
 with no scores published and no substitute action played.
 
@@ -151,7 +150,7 @@ parses line 1, and puts the rest in a prompt; it never writes soul text anywhere
 
 One line per event, timestamped: the seating line (pseudonym, model, byte count, hash), the full observation for
 each decision, every `thinking` string, every raw model reply, notebook size, the committed action or message,
-and the reasons for any retry or fallback. Hosted logs truncate at 10 MiB; a 60-turn episode writes roughly
+and any rejection reason. Hosted logs truncate at 10 MiB; a 60-turn episode writes roughly
 0.5 to 1 MiB.
 
 ## Persistent scratchpads
@@ -185,7 +184,7 @@ single contribution budget.
 After all speaking rounds, each seat receives a separate `COUNCIL BALLOT` decision with the complete discussion.
 Reply with `{"vote": "<other fisher pseudonym>"}` or `{"vote": null}` to abstain. Private `thinking` and `notebook`
 edits work as in other decisions. Missing, invalid, or timed-out ballots terminate the episode as a policy failure
-for that seat without scores after the usual retry. All ballots are published together, including abstentions, in seat order.
+for that seat without scores. All ballots are published together, including abstentions, in seat order.
 
 A vote needs `ceil(3 * original_seat_count / 4)` supporters for a single target (six of eight). Self-votes never
 count. Failed ballots do not consume the episode's single successful expulsion. While someone is expelled,

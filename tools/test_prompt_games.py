@@ -29,7 +29,7 @@ def play(
     memory_path: Path | None,
     original: bool,
     *,
-    exercise_retries: bool = False,
+    exercise_thinking: bool = False,
 ) -> str:
     manifest = json.loads((root / "coworld_manifest_template.json").read_text())
     config = (
@@ -132,12 +132,8 @@ def play(
             if mode == "choice" and observation["kind"] == "decision":
                 trace.update(json.dumps(call({"kind": "encode"}), sort_keys=True).encode())
             teacher = call({"kind": "teacher"})
-            if exercise_retries and view["phase"] == "fishing" and injected < 2:
-                teacher["response"] = (
-                    '{"thinking":"PRIVATE café 🐟","continue":true}'
-                    if injected == 0
-                    else '{"effort":"invalid effort"}'
-                )
+            if exercise_thinking and view["phase"] == "fishing" and injected == 0:
+                teacher["response"] = '{"thinking":"PRIVATE café 🐟","continue":true}'
                 injected += 1
             if observation["kind"] == "speech_turn":
                 request = {
@@ -157,8 +153,8 @@ def play(
                 assert response.pop("reason") == ""
             trace.update(json.dumps(response, sort_keys=True).encode())
         assert count > 0 and len(observation["scores"]) == players
-        if exercise_retries:
-            assert injected == 2 and continued_seen
+        if exercise_thinking:
+            assert injected == 1 and continued_seen
         trace.update(json.dumps(observation, sort_keys=True).encode())
         if memory_path:
             trace.update(
@@ -208,7 +204,7 @@ def main() -> None:
     canonical = None
     for wording, prompt_seed in [(name, 0) for name in WORDINGS] + [("mixed", 3)]:
         digest = play(
-            ROOT, "quiet-lake", "text", 11, wording, prompt_seed, None, False, exercise_retries=True
+            ROOT, "quiet-lake", "text", 11, wording, prompt_seed, None, False, exercise_thinking=True
         )
         if wording == "canonical":
             canonical = digest
@@ -222,11 +218,11 @@ def main() -> None:
                     prompt_seed,
                     None,
                     True,
-                    exercise_retries=True,
+                    exercise_thinking=True,
                 )
         assert digest == canonical
         count += 1
-    print(f"{count} complete games including thinking/retries PASS", flush=True)
+    print(f"{count} complete games including private thinking PASS", flush=True)
 
 
 if __name__ == "__main__":

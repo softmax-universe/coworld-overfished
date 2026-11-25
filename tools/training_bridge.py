@@ -126,7 +126,6 @@ class TrainingSession:
             self.phase = "memory_read"
             self.seat = self.memory_seats[0]
         self.conversation = []
-        self.retries_left = 1
         self.thinks_left = self.config.llm.think_turns
         self.calls = 0
         return self.observation()
@@ -359,7 +358,6 @@ class TrainingSession:
         self.decision_id += 1
         self.conversation = []
         self.calls = 0
-        self.retries_left = 1
         self.thinks_left = self.config.llm.think_turns
         self.speaker_index += 1
         if self.speaker_index == self.config.num_players:
@@ -394,28 +392,17 @@ class TrainingSession:
             response, self.brains[self.seat], self.engine, self.phase == "council", self.phase == "voting"
         )
         consumed = ""
-        if isinstance(parsed, (ThinkingReply, InvalidReply)):
-            self.conversation.append({"role": "assistant", "content": response})
-            if isinstance(parsed, ThinkingReply):
-                if self.thinks_left <= 0:
-                    correction = "No more private thinking turns. Decide now with one JSON object."
-                else:
-                    self.thinks_left -= 1
-                    correction = f"Continue privately. {self.thinks_left} thinking turn(s) left before you must decide."
-                reason = "private thinking continuation; no game action"
-                exhausted = self.calls == self.config.llm.max_calls_per_decision
-            else:
-                reason, correction = parsed.reason, parsed.retry_message
-                exhausted = self.retries_left == 0 or self.calls == self.config.llm.max_calls_per_decision
-                self.retries_left -= 1
-            if not exhausted:
-                self.conversation.append({"role": "user", "content": correction})
-                return {"kind": "rejected", "reason": reason, "observation": self.observation()}
-            return {
-                "kind": "terminal_failure",
-                "reason": reason,
-                "seat": self.seat,
-            }
+        if isinstance(parsed, InvalidReply):
+            return {"kind": "terminal_failure", "reason": parsed.reason, "seat": self.seat}
+        if isinstance(parsed, ThinkingReply):
+            if self.thinks_left <= 0 or self.calls >= self.config.llm.max_calls_per_decision:
+                return {"kind": "terminal_failure", "reason": "private thinking turns exhausted", "seat": self.seat}
+            self.thinks_left -= 1
+            self.conversation.extend([
+                {"role": "assistant", "content": response},
+                {"role": "user", "content": f"Continue privately. {self.thinks_left} thinking turn(s) left before you must decide."},
+            ])
+            return {"kind": "rejected", "reason": "private thinking continuation; no game action", "observation": self.observation()}
         elif isinstance(parsed, VoteReply):
             return self.apply_vote(parsed.vote)
         elif isinstance(parsed, SpeechReply):
@@ -441,7 +428,6 @@ class TrainingSession:
         self.decision_id += 1
         self.conversation = []
         self.calls = 0
-        self.retries_left = 1
         self.thinks_left = self.config.llm.think_turns
         self.seat += 1
         if self.seat == self.config.num_players:
@@ -536,7 +522,6 @@ class TrainingSession:
     def advance_fishing(self) -> None:
         self.conversation = []
         self.calls = 0
-        self.retries_left = 1
         self.thinks_left = self.config.llm.think_turns
         self.decision_id += 1
         self.seat += 1

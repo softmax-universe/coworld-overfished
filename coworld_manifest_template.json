@@ -84,7 +84,7 @@
             },
             "decision_seconds": {
               "default": 75.0,
-              "description": "Whole decision incl. thinking turns and retries; past it the episode fails for that seat.",
+              "description": "Whole decision incl. private thinking turns; past it the episode fails for that seat.",
               "exclusiveMinimum": 0,
               "title": "Decision Seconds",
               "type": "number"
@@ -115,7 +115,7 @@
             },
             "max_calls_per_decision": {
               "default": 4,
-              "description": "Hard cap on calls per decision incl. retries.",
+              "description": "Hard cap on calls per decision including private thinking.",
               "maximum": 10,
               "minimum": 1,
               "title": "Max Calls Per Decision",
