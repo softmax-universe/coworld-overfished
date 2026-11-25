@@ -770,7 +770,6 @@ class InvalidReply(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     kind: Literal["invalid"] = "invalid"
     reason: str
-    retry_message: str
 
 
 class ThinkingReply(BaseModel):
@@ -806,10 +805,7 @@ def parse_decision_reply(
     """The hosted and training paths share private memory and action parsing."""
     reply = extract_json(text)
     if reply is None:
-        return InvalidReply(
-            reason="reply had no JSON object",
-            retry_message="That was not a JSON object. Reply with exactly one JSON object.",
-        )
+        return InvalidReply(reason="expected one JSON object")
     thinking = clip(reply.get("thinking"), 4000)
     if thinking:
         brain.last_thinking.append(thinking)
@@ -821,23 +817,16 @@ def parse_decision_reply(
         parsed_vote = parse_vote(reply, engine, brain.slot)
         if isinstance(parsed_vote, CouncilVote):
             return VoteReply(vote=parsed_vote)
-        return InvalidReply(
-            reason=parsed_vote, retry_message=f"Invalid: {parsed_vote}. Reply with one corrected JSON object."
-        )
+        return InvalidReply(reason=parsed_vote)
     if council:
         say = reply.get("say")
         if not isinstance(say, str):
-            return InvalidReply(
-                reason="`say` must be a string",
-                retry_message='Invalid: `say` must be a string (use "" to say nothing). Reply with one corrected JSON object.',
-            )
+            return InvalidReply(reason="`say` must be a string")
         return SpeechReply(text=clip(say, engine.config.llm.say_max_chars))
     parsed = parse_action(reply, engine, brain.slot)
     if isinstance(parsed, Action):
         return ActionReply(action=parsed)
-    return InvalidReply(
-        reason=parsed, retry_message=f"Invalid: {parsed}. Reply with one corrected JSON object."
-    )
+    return InvalidReply(reason=parsed)
 
 
 class NamedTransfer(BaseModel):
@@ -923,8 +912,7 @@ async def _decide_calls(
     config = engine.config.llm
     messages = [{"role": "system", "content": brain.system_prompt}, {"role": "user", "content": observation}]
     thinks_left = think_turns
-    retries_left = 1
-    for _ in range(config.max_calls_per_decision):
+    for call_index in range(config.max_calls_per_decision):
         brain.calls += 1
         evidence = Attempt(
             policy=brain.soul.model,
@@ -955,17 +943,13 @@ async def _decide_calls(
             log(f"thinking: {brain.last_thinking[-1]}")
         if isinstance(parsed, ThinkingReply):
             evidence.rejection_reason = "private thinking continuation; no game action"
+            if thinks_left <= 0 or call_index + 1 >= config.max_calls_per_decision:
+                evidence.rejection_reason = "private thinking turns exhausted"
+                decision.failure_reason = evidence.rejection_reason
+                transport._notify(brain.slot, evidence)
+                log(decision.failure_reason)
+                return
             transport._notify(brain.slot, evidence)
-            if thinks_left <= 0:
-                log("asked to continue thinking with no thinking turns left; demanding a decision")
-                messages.append({"role": "assistant", "content": reply_text})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "No more private thinking turns. Decide now with one JSON object.",
-                    }
-                )
-                continue
             thinks_left -= 1
             messages.append({"role": "assistant", "content": reply_text})
             messages.append(
@@ -997,12 +981,8 @@ async def _decide_calls(
             return
         evidence.rejection_reason = parsed.reason
         transport._notify(brain.slot, evidence)
-        log(f"invalid action: {parsed.reason}; " + ("asking once more" if retries_left else "giving up"))
-        if retries_left == 0:
-            break
-        retries_left -= 1
-        messages.append({"role": "assistant", "content": reply_text})
-        messages.append({"role": "user", "content": parsed.retry_message})
+        log(f"invalid action: {parsed.reason}")
+        return
 
 
 def elapsed_since(start: float) -> float:

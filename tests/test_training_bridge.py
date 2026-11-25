@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import sys
@@ -45,23 +46,18 @@ def test_language_memory_and_notebook_use_hosted_phases(tmp_path):
     assert "PRIVATE" not in json.dumps(session.engine.replay())
 
 
-def test_language_thinking_and_retry_preserve_hosted_conversation():
+def test_language_private_thinking_and_invalid_final_action():
     soul = ROOT / "souls/examples/villager.md"
     session = TrainingSession("quiet-lake", "text", 2, [soul] * 8, None)
-    initial = session.reset({"seed": "retry-parity", "players": 8})
+    initial = session.reset({"seed": "failed-decision", "players": 8})
     first = session.step({"decision_id": 0, "response": '{"continue":true,"notebook":"private"}'})
     assert first["kind"] == "rejected" and first["observation"]["decision_id"] == 0
     assert (
         first["observation"]["messages"][-1]["content"]
         == "Continue privately. 0 thinking turn(s) left before you must decide."
     )
-    second = session.step({"decision_id": 0, "response": "invalid JSON"})
-    assert second["kind"] == "rejected"
-    assert (
-        second["observation"]["messages"][-1]["content"]
-        == "That was not a JSON object. Reply with exactly one JSON object."
-    )
-    failed = session.step({"decision_id": 0, "response": "invalid again"})
+    failed = session.step({"decision_id": 0, "response": "invalid JSON"})
+    assert failed["reason"] == "expected one JSON object"
     assert failed["kind"] == "terminal_failure"
     assert failed["seat"] == 0
     assert "action" not in failed
@@ -150,8 +146,8 @@ def test_training_ballots_expel_and_reinstate_without_leaking_pending_votes(mode
             if session.seat == 1:
                 bad = {"choice": 2} if mode == "choice" else {"vote": session.engine.pseudonyms[1]}
                 assert (
-                    session.step({"decision_id": session.decision_id, "response": json.dumps(bad)})["kind"]
-                    == "rejected"
+                    copy.deepcopy(session).step({"decision_id": session.decision_id, "response": json.dumps(bad)})["kind"]
+                    == ("rejected" if mode == "choice" else "terminal_failure")
                 )
             if session.engine.turn == 1:
                 assert session.engine.communes == []  # No partial ballots in public state.

@@ -222,7 +222,7 @@ async def test_native_attempts_join_private_memory_speech_and_actions(
     assert trajectory.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("mode", ["http429", "invalid-json", "invalid-schema"])
+@pytest.mark.parametrize("mode", ["http429", "invalid-json", "invalid-schema", "invalid-action"])
 async def test_failed_native_responses_fail_episode_without_scores_and_retain_evidence(
     tmp_path, monkeypatch, unused_tcp_port, mode
 ):
@@ -233,6 +233,8 @@ async def test_failed_native_responses_fail_episode_without_scores_and_retain_ev
         call_id = str(uuid4())
         status = 429 if mode == "http429" else 200
         text = "PRIVATE FAILED RESPONSE" if mode != "invalid-schema" else '{"choices":[]}'
+        if mode == "invalid-action":
+            text = json.dumps({"model": "fixture/model", "choices": [{"finish_reason": "stop", "message": {"content": '{"effort":2}'}}]})
         archives[call_id] = (body, text)
         return web.Response(text=text, status=status, headers={"X-Softmax-Llm-Call-Id": call_id})
 

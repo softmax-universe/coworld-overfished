@@ -93,7 +93,7 @@ class LlmConfig(BaseModel):
     decision_seconds: float = Field(
         default=75.0,
         gt=0,
-        description="Whole decision incl. thinking turns and retries; past it the episode fails for that seat.",
+        description="Whole decision incl. private thinking turns; past it the episode fails for that seat.",
     )
     max_output_tokens: int = Field(
         default=4000,
@@ -106,7 +106,7 @@ class LlmConfig(BaseModel):
     )
     say_max_chars: int = Field(default=500, ge=1, le=4000, description="One council message.")
     max_calls_per_decision: int = Field(
-        default=4, ge=1, le=10, description="Hard cap on calls per decision incl. retries."
+        default=4, ge=1, le=10, description="Hard cap on calls per decision including private thinking."
     )
     reasoning: dict[str, JsonValue] = Field(
         default_factory=lambda: dict[str, JsonValue](effort="low"),

@@ -167,7 +167,7 @@ Stream format and replay schema: [docs/GLOBAL.md](docs/GLOBAL.md).
 
 | File                           | Contents                                                                                           |
 | ------------------------------ | -------------------------------------------------------------------------------------------------- |
-| `logs/policy_agent_<slot>.log` | Private to the seat: observations, thinking, raw replies, notebook updates, fallbacks.             |
+| `logs/policy_agent_<slot>.log` | Private to the seat: observations, thinking, raw replies, notebook updates, policy failures.             |
 | `replay`                       | Public: efforts, catches, punishments, fish counts, council speech, the sampled lake. No thoughts. |
 | `results.json`                 | `scores` per slot, pseudonyms, final stock, whether the lake collapsed, models, model-call totals. |
 | `player_status.json`           | Seat lifecycle snapshot.                                                                           |
