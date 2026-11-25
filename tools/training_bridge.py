@@ -30,7 +30,7 @@ from overfished.llm import (
     vote_observation,
 )
 from overfished.memory import SCRATCHPAD_NOTE_BYTES, ScratchpadStore, policy_id
-from overfished.scripted import SCRIPTED_NAMES, ScriptedPolicy, ScriptedView, fallback_action, scripted_policy
+from overfished.scripted import SCRIPTED_NAMES, ScriptedPolicy, ScriptedView, scripted_policy
 from overfished.soul import parse_soul
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -411,20 +411,11 @@ class TrainingSession:
             if not exhausted:
                 self.conversation.append({"role": "user", "content": correction})
                 return {"kind": "rejected", "reason": reason, "observation": self.observation()}
-            if self.phase == "council":
-                result = self.say({"decision_id": self.decision_id, "text": ""})
-                return {
-                    "kind": "consumed_rejection",
-                    "reason": reason,
-                    "action": {"say": ""},
-                    "observation": result["observation"],
-                }
-            if self.phase == "voting":
-                result = self.apply_vote(CouncilVote(auto=True))
-                result.update(kind="consumed_rejection", reason=reason)
-                return result
-            action = fallback_action(self.engine, self.seat)
-            consumed = reason
+            return {
+                "kind": "terminal_failure",
+                "reason": reason,
+                "seat": self.seat,
+            }
         elif isinstance(parsed, VoteReply):
             return self.apply_vote(parsed.vote)
         elif isinstance(parsed, SpeechReply):
@@ -439,8 +430,7 @@ class TrainingSession:
         self.actions.append(action)
         self.advance_fishing()
         return {
-            "kind": "consumed_rejection" if consumed else "accepted",
-            **({"reason": consumed} if consumed else {}),
+            "kind": "accepted",
             "action": action.model_dump(mode="json"),
             "observation": self.observation(),
         }

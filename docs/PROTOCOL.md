@@ -42,7 +42,7 @@ A scripted soul may set `effort: 0.35` on its own line; `greedy` ignores it and 
 
 The table lives in `model_aliases` of the game config, so a variant can pin or extend it. Any canonical
 `vendor/model` slug passes through unchanged; the hosted sidecar decides whether it is admitted. A model the
-sidecar rejects fails every call, and the seat plays the fallback action for the whole episode.
+sidecar rejects fails its call and terminates the episode as a policy failure for that seat without scores.
 
 ### Rejected souls
 
@@ -115,11 +115,13 @@ At a council:
 To keep reasoning privately before committing, reply `{"thinking": "...", "continue": true}`. Each decision
 allows `llm.think_turns` such replies (default 1), after which the game demands a decision.
 
-Parsing is forgiving: fenced JSON and surrounding prose are tolerated, `"60%"` and `60` are read as 0.6, target
-names are case-insensitive, and `fish: 0` entries are dropped. An invalid reply gets one correction prompt with
-the reason. If the seat still has not produced a valid decision after `llm.max_calls_per_decision` calls, or a
-call fails or times out (`llm.timeout_seconds`), the seat plays the **fallback**: repeat its last effort (0.4
-before any turn), punish nobody, say nothing. Fallback decisions are marked `auto` in the replay.
+Parsing accepts a single JSON object (optionally wrapped in one outer Markdown code fence), case-insensitive
+target names, omitted or null `punish`/`gift` lists, and drops `fish: 0` entries. `effort` must be a numeric
+fraction in `[0, 1]`, `say` must be a string (`""` to stay silent), and `vote` must be `null` or an eligible
+other fisher's name. An invalid reply gets one correction prompt with the reason. If the seat still has not
+produced a valid decision after `llm.max_calls_per_decision` calls, or a call fails or times out
+(`llm.timeout_seconds` / `llm.decision_seconds`), the episode ends as a terminal policy failure for that seat
+with no scores published and no substitute action played.
 
 ## Budgets
 
@@ -130,10 +132,9 @@ before any turn), punish nobody, say nothing. Fallback decisions are marked `aut
 - Fishing turns: all seats decide in parallel; each seat makes its calls sequentially (at most
   `llm.max_calls_per_decision`, default 4). Councils: seats speak one at a time.
 - `llm.timeout_seconds` (60) bounds one call; `llm.decision_seconds` (75) bounds a whole decision including
-  thinking turns and retries. Either expiring means the fallback for that decision.
-- `episode_wall_seconds` (default 900) is the model-call budget for the whole episode. In the last quarter of it
-  thinking turns drop to 0; past it every soul seat plays the fallback so the episode still finishes inside the
-  hosted deadline. This applies to all seats equally.
+  thinking turns and retries. Either expiring terminates the episode as a policy failure for that seat.
+- `episode_wall_seconds` (default 1800) is the model-call budget for the whole episode. In the last quarter of it
+  thinking turns drop to 0; past it any model decision terminates the episode as a policy failure without scores.
 - The hosted sidecar enforces per-seat request rates and the league's per-episode spend ceiling; a denied call
   counts as a failed call.
 
@@ -183,8 +184,8 @@ single contribution budget.
 
 After all speaking rounds, each seat receives a separate `COUNCIL BALLOT` decision with the complete discussion.
 Reply with `{"vote": "<other fisher pseudonym>"}` or `{"vote": null}` to abstain. Private `thinking` and `notebook`
-edits work as in other decisions. Missing, invalid, or timed-out ballots default to abstention after the usual
-retry. All ballots are published together, including abstentions, in seat order.
+edits work as in other decisions. Missing, invalid, or timed-out ballots terminate the episode as a policy failure
+for that seat without scores after the usual retry. All ballots are published together, including abstentions, in seat order.
 
 A vote needs `ceil(3 * original_seat_count / 4)` supporters for a single target (six of eight). Self-votes never
 count. Failed ballots do not consume the episode's single successful expulsion. While someone is expelled,

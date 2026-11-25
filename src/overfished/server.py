@@ -45,7 +45,7 @@ from overfished.memory import (
     ScratchpadStore,
     policy_id,
 )
-from overfished.scripted import SCRIPTED_NAMES, ScriptedPolicy, ScriptedView, fallback_action, scripted_policy
+from overfished.scripted import SCRIPTED_NAMES, ScriptedPolicy, ScriptedView, scripted_policy
 from overfished.seats import (
     SeatLog,
     SeatsDocument,
@@ -63,6 +63,15 @@ from overfished.viewer_build import DEFAULT_VIEWER_DIR, build_index_html
 
 def log(message: str) -> None:
     print(f"overfished: {message}", flush=True)
+
+
+class SeatPolicyFailure(RuntimeError):
+    """A seat failed to produce a valid decision; terminal for the episode without scores."""
+
+    def __init__(self, slot: int, message: str) -> None:
+        super().__init__(message)
+        self.slot = slot
+        self.message = message
 
 
 @dataclass
@@ -127,7 +136,7 @@ class Episode:
     def observe_attempt(self, slot: int, attempt: Attempt) -> None:
         if self.trajectory is not None:
             assert self.transport is not None
-            pairs = self.transport.received_header_pairs[attempt.attempt_id]
+            pairs = getattr(self.transport, "received_header_pairs", {}).get(attempt.attempt_id, [])
             self.trajectory.observe(slot, attempt, pairs)
 
     async def parallel(self, work: list) -> list:
@@ -337,11 +346,9 @@ class Episode:
             return action
         assert seat.brain is not None and self.transport is not None
         if think_turns < 0:
-            action = fallback_action(self.engine, seat.slot)
-            seat.note(
-                f"turn {self.engine.turn}: LLM wall budget exhausted; fallback effort {action.effort:.2f}"
-            )
-            return action
+            message = f"seat {seat.slot}: LLM wall budget exhausted on fishing turn {self.engine.turn}"
+            seat.note(f"turn {self.engine.turn}: {message}")
+            raise SeatPolicyFailure(seat.slot, message)
         seat.note(f"turn {self.engine.turn}: observation\n{observation}")
 
         def note(line: str) -> None:
@@ -360,9 +367,10 @@ class Episode:
         for reply in decision.transcript:
             seat.note(f"turn {self.engine.turn}: raw reply\n{reply}")
         if decision.action is None:
-            action = fallback_action(self.engine, seat.slot)
-            seat.note(f"turn {self.engine.turn}: no valid action; fallback effort {action.effort:.2f}")
-            return action
+            reason = decision.failure_reason or "no valid fishing action"
+            message = f"seat {seat.slot}: fishing turn {self.engine.turn} policy failure: {reason}"
+            seat.note(f"turn {self.engine.turn}: policy failure: {reason}")
+            raise SeatPolicyFailure(seat.slot, message)
         seat.note(
             f"turn {self.engine.turn}: effort {decision.action.effort:.2f}, punish "
             f"{[(self.engine.pseudonyms[p.target], p.fish) for p in decision.action.punish]}; notebook now {len(seat.brain.notebook)} chars"
@@ -413,10 +421,9 @@ class Episode:
             return speech
         assert seat.brain is not None and self.transport is not None
         if think_turns < 0:
-            seat.note(
-                f"council before turn {self.engine.turn} round {round_index + 1}: LLM wall budget exhausted; silent"
-            )
-            return Speech(slot=seat.slot, text="", auto=True)
+            message = f"seat {seat.slot}: LLM wall budget exhausted in council before turn {self.engine.turn}"
+            seat.note(f"council before turn {self.engine.turn} round {round_index + 1}: {message}")
+            raise SeatPolicyFailure(seat.slot, message)
         seat.note(
             f"council before turn {self.engine.turn} round {round_index + 1}: observation\n{observation}"
         )
@@ -437,10 +444,10 @@ class Episode:
         for reply in decision.transcript:
             seat.note(f"council before turn {self.engine.turn} round {round_index + 1}: raw reply\n{reply}")
         if decision.say is None:
-            seat.note(
-                f"council before turn {self.engine.turn} round {round_index + 1}: no valid message; silent"
-            )
-            return Speech(slot=seat.slot, text="", auto=True)
+            reason = decision.failure_reason or "no valid council message"
+            message = f"seat {seat.slot}: council before turn {self.engine.turn} policy failure: {reason}"
+            seat.note(f"council before turn {self.engine.turn} round {round_index + 1}: policy failure: {reason}")
+            raise SeatPolicyFailure(seat.slot, message)
         seat.note(f"council before turn {self.engine.turn} round {round_index + 1}: says {decision.say!r}")
         return Speech(slot=seat.slot, text=decision.say)
 
@@ -475,7 +482,9 @@ class Episode:
             ]
             return CouncilVote()
         if self.think_turns_now() < 0:
-            return CouncilVote(auto=True)
+            message = f"seat {seat.slot}: LLM wall budget exhausted on council ballot before turn {self.engine.turn}"
+            seat.note(f"council ballot: {message}")
+            raise SeatPolicyFailure(seat.slot, message)
         assert seat.brain is not None and self.transport is not None
         seat.note(f"council ballot: observation\n{observation}")
         decision = await decide(
@@ -491,7 +500,12 @@ class Episode:
         seat.pending_attempts = decision.attempts
         for reply in decision.transcript:
             seat.note(f"council ballot: raw reply\n{reply}")
-        return decision.vote or CouncilVote(auto=True)
+        if decision.vote is None:
+            reason = decision.failure_reason or "no valid council ballot"
+            message = f"seat {seat.slot}: council ballot before turn {self.engine.turn} policy failure: {reason}"
+            seat.note(f"council ballot: policy failure: {reason}")
+            raise SeatPolicyFailure(seat.slot, message)
+        return decision.vote
 
     # ---- phases ----------------------------------------------------------------------
 
@@ -672,6 +686,7 @@ class Episode:
     async def run(self) -> None:
         log(f"episode start: {self.config.num_players} seats; native internal actors")
         completed = False
+        policy_failure: SeatPolicyFailure | None = None
         try:
             if self.scratchpads is not None:
                 await self.read_scratchpads()
@@ -684,6 +699,9 @@ class Episode:
             if isinstance(self.scratchpads, HostedScratchpadStore):
                 self.scratchpads.flush()
             completed = True
+        except SeatPolicyFailure as error:
+            policy_failure = error
+            raise
         finally:
             deadline = self.cleanup_end if self.cleanup_end is not None else cleanup_deadline()
             if not completed and self.cleanup_end is None:
@@ -693,21 +711,31 @@ class Episode:
             readers_joined = all(item.attempt.response_reader_joined is not False for item in pending)
             self.ownership_joined = joined and readers_joined
             if self.ownership_joined and not completed:
+                if policy_failure is not None:
+                    write_player_failure(
+                        self.artifacts.failure_uri, policy_failure.slot, policy_failure.message
+                    )
                 if self.trajectory is not None:
+                    outcome = {
+                        "interrupted": policy_failure is None,
+                        "runtime_configuration": self.config.model_dump(mode="json"),
+                        "prompt_configuration": self.config.prompt_selection.model_dump(mode="json"),
+                        "seed": self.engine.seed,
+                        "engine_effects": EngineEffects(
+                            lake=self.engine.lake,
+                            turn_limit=self.engine.turn_limit,
+                            turns=self.engine.turns,
+                            councils=self.engine.communes,
+                        ).model_dump(mode="json"),
+                        "unapplied_attempts": [item.model_dump(mode="json") for item in pending],
+                    }
+                    if policy_failure is not None:
+                        outcome["policy_failure"] = {
+                            "slot": policy_failure.slot,
+                            "message": policy_failure.message,
+                        }
                     self.trajectory.finish(
-                        outcome={
-                            "interrupted": True,
-                            "runtime_configuration": self.config.model_dump(mode="json"),
-                            "prompt_configuration": self.config.prompt_selection.model_dump(mode="json"),
-                            "seed": self.engine.seed,
-                            "engine_effects": EngineEffects(
-                                lake=self.engine.lake,
-                                turn_limit=self.engine.turn_limit,
-                                turns=self.engine.turns,
-                                councils=self.engine.communes,
-                            ).model_dump(mode="json"),
-                            "unapplied_attempts": [item.model_dump(mode="json") for item in pending],
-                        },
+                        outcome=outcome,
                         participant_outcomes={},
                         completed=False,
                     )
@@ -752,7 +780,7 @@ class Episode:
             seat.note(
                 f"episode over: score {self.engine.scores[seat.slot]}, balance {self.engine.fish[seat.slot]} fish"
                 + (
-                    f"; {brain.calls} model calls, {brain.failures} failures, {brain.fallbacks} fallbacks"
+                    f"; {brain.calls} model calls, {brain.failures} failures"
                     if brain
                     else ""
                 )
@@ -913,15 +941,20 @@ async def serve_episode(
     site = web.TCPSite(runner, host, port)
     await site.start()
     log(f"listening on {host}:{port}")
+    failed = False
     try:
         await episode.run()
         # Keep the existing normal viewer grace; ownership credit and results follow cleanup.
         await asyncio.sleep(2.0)
+    except SeatPolicyFailure:
+        failed = True
+        log("terminal player failure declared; private failure artifact retained")
     finally:
         deadline = episode.cleanup_end if episode.cleanup_end is not None else cleanup_deadline()
         await close_http_surface(runner, deadline)
         episode.surface_joined = True
-    episode.finalize()
+    if not failed:
+        episode.finalize()
     return 0
 
 

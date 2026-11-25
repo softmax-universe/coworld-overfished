@@ -8,7 +8,7 @@ import pytest
 from overfished.__main__ import stage_local_episode
 from overfished.config import GameConfig
 from overfished.llm import Transport
-from overfished.server import Episode, load_seats, serve_episode
+from overfished.server import Episode, SeatPolicyFailure, load_seats, serve_episode
 from overfished.soul import SoulError
 
 SOULS = Path(__file__).resolve().parent.parent / "souls"
@@ -167,18 +167,26 @@ async def test_soul_seats_think_then_act_and_talk(tmp_path: Path):
     assert "let me think more" not in json.dumps(replay)
 
 
-async def test_bad_replies_fall_back_and_are_marked_auto(tmp_path: Path):
+async def test_bad_replies_fail_without_scores(tmp_path: Path):
     villager = VILLAGER
     souls = [villager, SOULS / "steady.md"]
     transport = FakeTransport(replies=["garbage"] * 200)
-    _results, replay, out = await run_episode(tmp_path, souls, transport, commune_rounds=1, turns=2)
-    assert all(0 in turn["auto"] for turn in replay["turns"])
-    assert all(s["auto"] for c in replay["communes"] for r in c["rounds"] for s in r if s["slot"] == 0)
-    log = (out / "logs" / "policy_agent_0.log").read_text()
-    assert "fallback" in log
+    config = config_for(souls, commune_rounds=1, turns=2)
+    seats_path, artifacts = stage_local_episode(config, souls, tmp_path)
+    document = load_seats(seats_path.resolve().as_uri())
+    episode = Episode.from_seats(config, 7, document, transport, artifacts, tmp_path / "memory")
+    with pytest.raises(SeatPolicyFailure) as exc_info:
+        await episode.run()
+    assert exc_info.value.slot == 0
+    failure = json.loads((tmp_path / "player_failure.json").read_text())
+    assert failure["failed_policy_index"] == 0
+    assert not (tmp_path / "results.json").exists()
+    assert not (tmp_path / "replay").exists()
+    log = (tmp_path / "logs" / "policy_agent_0.log").read_text()
+    assert "policy failure" in log
 
 
-async def test_exhausted_wall_budget_goes_scripted(tmp_path: Path):
+async def test_exhausted_wall_budget_fails_without_scores(tmp_path: Path):
     villager = VILLAGER
     transport = FakeTransport()
     souls = [villager, villager]
@@ -187,11 +195,15 @@ async def test_exhausted_wall_budget_goes_scripted(tmp_path: Path):
     document = load_seats(seats_path.resolve().as_uri())
     episode = Episode.from_seats(config, 7, document, transport, artifacts, tmp_path / "memory")
     episode.started -= config.episode_wall_seconds + 1
-    await episode.run()
-    episode.finalize()
-    replay = json.loads((tmp_path / "replay").read_text())
+    with pytest.raises(SeatPolicyFailure) as exc_info:
+        await episode.run()
+    assert exc_info.value.slot == 0
     assert transport.calls == 0
-    assert all(turn["auto"] == [0, 1] for turn in replay["turns"])
+    failure = json.loads((tmp_path / "player_failure.json").read_text())
+    assert failure["failed_policy_index"] == 0
+    assert "wall budget exhausted" in failure["message"]
+    assert not (tmp_path / "results.json").exists()
+    assert not (tmp_path / "replay").exists()
 
 
 async def test_rejected_soul_declares_player_failure(tmp_path: Path):
@@ -272,7 +284,7 @@ class SlowTransport(FakeTransport):
         return json.dumps({"thinking": "slow", "effort": 0.9, "punish": []})
 
 
-async def test_decision_deadline_falls_back(tmp_path: Path):
+async def test_decision_deadline_fails_without_scores(tmp_path: Path):
     souls = [VILLAGER, SOULS / "steady.md"]
     config = config_for(
         souls, turns=2, commune_rounds=0, llm={"decision_seconds": 0.1, "reasoning": {"effort": "low"}}
@@ -281,10 +293,14 @@ async def test_decision_deadline_falls_back(tmp_path: Path):
     document = load_seats(seats_path.resolve().as_uri())
     transport = SlowTransport()
     episode = Episode.from_seats(config, 7, document, transport, artifacts, tmp_path / "memory")
-    await episode.run()
-    episode.finalize()
-    replay = json.loads((tmp_path / "replay").read_text())
-    assert all(0 in turn["auto"] for turn in replay["turns"])
+    with pytest.raises(SeatPolicyFailure) as exc_info:
+        await episode.run()
+    assert exc_info.value.slot == 0
+    failure = json.loads((tmp_path / "player_failure.json").read_text())
+    assert failure["failed_policy_index"] == 0
+    assert "deadline exceeded" in failure["message"]
+    assert not (tmp_path / "results.json").exists()
+    assert not (tmp_path / "replay").exists()
     assert "exceeded" in (tmp_path / "logs" / "policy_agent_0.log").read_text()
 
 

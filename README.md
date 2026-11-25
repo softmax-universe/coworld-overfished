@@ -124,14 +124,14 @@ the reserved estimate to prevent unmetered retries.
 Raw notes remain archived; compaction bounds future reads rather than deleting history.
 Deploy the platform migration, dispatcher, and worker before uploading this game version.
 
-A seat whose model fails, times out, or never produces a valid decision plays the fallback for that decision:
-repeat its last effort, punish nobody, say nothing. Those decisions are marked `auto` in the replay.
+A seat whose model fails, times out, or never produces a valid decision ends the episode as a terminal policy
+failure for that seat (`player_failure.json`), with no substitute action played and no scores published.
 
 Timing, per seat and per decision: each model call has `llm.timeout_seconds` (60) and the whole decision,
 thinking turns and retries included, has `llm.decision_seconds` (75); every seat decides in parallel on a fishing
 turn, so a turn costs one slow decision, not eight. Councils are sequential by design: 8 seats × 2 rounds is 16
 decisions in a row. Over the episode, `episode_wall_seconds` (1800) caps model time: in its last quarter thinking
-turns drop to zero, past it every seat plays the fallback, applied to all seats equally. The manifest asks for a
+turns drop to zero, past it any model decision terminates the episode as a policy failure. The manifest asks for a
 45 minute hosted deadline.
 
 ## Variants
@@ -258,11 +258,9 @@ waits for hosted certification, and verifies canonical promotion. The workflow i
 `coworld==0.1.55` release and needs one repository Actions secret: `SOFTMAX_API_KEY`, containing a
 Softmax team token. The package version in `pyproject.toml` is separate from the hosted Coworld version.
 
-Layout: `src/overfished/` (engine, soul parsing, scripted baselines, LLM harness, server), `souls/` (the three
-bundled scripted players; `souls/examples/` holds model souls that are not bundled because certification runs
-without model access, among them the three overfisher archetypes: `overfisher` announces full effort and means
-it, `liar` fishes at full effort and talks like a model citizen, and a sneak fishes a quarter above whatever the
-council agreed and backs off when noticed), `viewer/` (replay
+Layout: `src/overfished/` (engine, soul parsing, scripted baselines, LLM harness, server), `souls/` (the bundled
+model player `model.md` plus the three explicit scripted baselines `steady.md`, `greedy.md`, `enforcer.md`;
+`souls/examples/` holds additional model soul templates), `viewer/` (replay
 viewer sources), `tools/` (build hook, manifest generator), `tests/`, `docs/`.
 
 Model calls: hosted, the game talks to the platform's LLM sidecar (`COWORLD_LLM_ENDPOINT`) with

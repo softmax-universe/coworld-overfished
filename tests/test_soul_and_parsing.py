@@ -47,13 +47,16 @@ def test_rejected_souls(data, fragment):
         parse_soul(data, ALIASES, SCRIPTED)
 
 
-def test_extract_json_tolerates_fences_and_prose():
-    assert extract_json('Sure!\n```json\n{"effort": 0.5, "punish": []}\n```\nDone.') == {
+def test_extract_json_accepts_bare_or_single_fence_only():
+    assert extract_json('{"effort": 0.5, "punish": []}') == {"effort": 0.5, "punish": []}
+    assert extract_json('```json\n{"effort": 0.5, "punish": []}\n```') == {
         "effort": 0.5,
         "punish": [],
     }
+    assert extract_json('```\n{"effort": 0.5}\n```') == {"effort": 0.5}
+    assert extract_json('Sure!\n```json\n{"effort": 0.5, "punish": []}\n```\nDone.') is None
     assert extract_json("no json here") is None
-    assert extract_json('{"a": 1} trailing {"b": 2}') == {"a": 1}
+    assert extract_json('{"a": 1} trailing {"b": 2}') is None
 
 
 def engine() -> Engine:
@@ -71,11 +74,11 @@ def engine() -> Engine:
 def test_parse_action_variants():
     e = engine()
     other = e.pseudonyms[1]
-    action = parse_action({"effort": "60%", "punish": [{"target": other.lower(), "fish": 2}]}, e, 0)
+    action = parse_action({"effort": 0.6, "punish": [{"target": other.lower(), "fish": 2}]}, e, 0)
     assert isinstance(action, Action)
     assert action.effort == 0.6
     assert action.punish[0].target == 1 and action.punish[0].fish == 2
-    assert parse_action({"effort": 45}, e, 0).effort == 0.45
+    assert parse_action({"effort": 0.45, "punish": None, "gift": None}, e, 0).effort == 0.45
     gifted = parse_action(
         {"effort": 0.3, "gift": [{"target": other, "fish": 2}, {"target": other, "fish": 0}]}, e, 0
     )
@@ -93,13 +96,33 @@ def test_parse_action_variants():
 
 def test_parse_action_rejections():
     e = engine()
+    other = e.pseudonyms[1]
     assert "effort" in parse_action({"effort": "lots"}, e, 0)
+    assert "effort" in parse_action({"effort": "60%"}, e, 0)
+    assert "effort" in parse_action({"effort": 45}, e, 0)
     assert "effort" in parse_action({"effort": 2.0}, e, 0)
-    assert "target" in parse_action({"effort": 0.5, "punish": [{"target": e.pseudonyms[0]}]}, e, 0)
-    assert "target" in parse_action({"effort": 0.5, "punish": [{"target": "Nobody"}]}, e, 0)
+    assert "target" in parse_action({"effort": 0.5, "punish": [{"target": e.pseudonyms[0], "fish": 1}]}, e, 0)
+    assert "target" in parse_action({"effort": 0.5, "punish": [{"target": "Nobody", "fish": 1}]}, e, 0)
+    assert "whole" in parse_action({"effort": 0.5, "punish": [{"target": other}]}, e, 0)
     assert "whole" in parse_action(
         {"effort": 0.5, "punish": [{"target": e.pseudonyms[2], "fish": 1.5}]}, e, 0
     )
+    assert "list" in parse_action({"effort": 0.5, "punish": "none"}, e, 0)
+
+
+def test_council_speech_requires_explicit_string_say():
+    from overfished.llm import InvalidReply, SeatBrain, SpeechReply, parse_decision_reply
+
+    game = engine()
+    soul = parse_soul(b"#!google/gemini-3.8-flash\nSpeak plainly.", ALIASES, SCRIPTED)
+    brain = SeatBrain(0, soul, "system")
+    assert parse_decision_reply('{"say": ""}', brain, game, council=True) == SpeechReply(text="")
+    assert parse_decision_reply('{"say": "Hold 40%."}', brain, game, council=True) == SpeechReply(
+        text="Hold 40%."
+    )
+    assert isinstance(parse_decision_reply('{"thinking": "forgot say"}', brain, game, council=True), InvalidReply)
+    assert isinstance(parse_decision_reply('{"say": null}', brain, game, council=True), InvalidReply)
+    assert isinstance(parse_decision_reply('{"say": 123}', brain, game, council=True), InvalidReply)
 
 
 def test_manifest_declares_named_players_inline():
@@ -115,6 +138,16 @@ def test_manifest_declares_named_players_inline():
     items = players["items"]
     assert items["type"] == "object" and items["properties"]["name"]["type"] == "string"
     assert "$ref" not in json.dumps(items)
+    assert manifest["game"]["runnable"]["env"].get("COWORLD_LLM_ENABLED") == "true"
+    player_ids = [entry["id"] for entry in manifest["player"]]
+    assert "model" in player_ids and {"steady", "greedy", "enforcer"}.issubset(player_ids)
+    cert_ids = [entry["player_id"] for entry in manifest["certification"]["players"]]
+    assert cert_ids[0] == "model"
+    assert {"steady", "greedy", "enforcer"}.issubset(cert_ids[1:])
+    model_soul = parse_soul(
+        (Path(__file__).resolve().parent.parent / "souls" / "model.md").read_bytes(), ALIASES, SCRIPTED
+    )
+    assert not model_soul.scripted and "/" in model_soul.model
 
 
 def test_vote_parser_rejects_self_unknown_and_wrong_reinstatement():
